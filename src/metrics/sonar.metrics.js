@@ -59,6 +59,7 @@ async function extractSonarMetrics(config) {
     const complexity = getVal(ms, "complexity") || 0;
     const violations = getVal(ms, "violations") || 0;
     const ncloc = getVal(ms, "ncloc") || 0;
+    const linesToCover = getVal(ms, "lines_to_cover") || 0;
 
     if (comp.qualifier === "FIL") {
       // Lógica de Coverage para Archivos
@@ -84,6 +85,7 @@ async function extractSonarMetrics(config) {
         filePath: path,
         complexity: complexity,
         ncloc: ncloc,
+        lines_to_cover: linesToCover,
         coverage: {
           percentage: finalCoverage,
           url: buildSonarCodeUrl(key, config),

@@ -1,4 +1,6 @@
 node_modules
 *_metrics.json
 *.db-*
+*.ddb
 .env
+dist-pages

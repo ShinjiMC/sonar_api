@@ -152,7 +152,7 @@ function calculateAndSaveFileCriticality(sha_id, fileNclocMap) {
   );
 }
 
-function calculateAndSaveFolderCriticality(sha_id) {
+function calculateAndSaveFolderCriticality(sha_id, linesToCoverMap) {
   console.log(
     `Calculando criticidad de carpetas (Bottom-Up) SHA ID: ${sha_id}`
   );
@@ -215,12 +215,13 @@ function calculateAndSaveFolderCriticality(sha_id) {
 
   for (const folderPath of sortedPaths) {
     const children = hierarchyMap.get(folderPath) || [];
-    const currentStats = { maxSev: {}, debtValues: {} };
-    const debtCollectors = {};
-
+    const currentStats = { maxSev: {}, debtAccumulators: {} };
     metricsKeys.forEach((m) => {
       currentStats.maxSev[m] = 1; // LOW
-      debtCollectors[m] = [];
+      currentStats.debtAccumulators[metricToDebtCol[m]] = {
+        weightedSum: 0,
+        totalLines: 0,
+      };
     });
 
     for (const childName of children) {
@@ -230,54 +231,68 @@ function calculateAndSaveFolderCriticality(sha_id) {
       if (folderStatsMap.has(childPath)) {
         const childStats = folderStatsMap.get(childPath);
         metricsKeys.forEach((metric) => {
-          const childSevVal = childStats.maxSev[metric];
-          const debtKey = metricToDebtCol[metric];
-
           currentStats.maxSev[metric] = Math.max(
             currentStats.maxSev[metric],
-            childSevVal
+            childStats.maxSev[metric]
           );
+          const debtKey = metricToDebtCol[metric];
+          const parentAcc = currentStats.debtAccumulators[debtKey];
+          const childAcc = childStats.debtAccumulators[debtKey];
 
           // Acumular Deuda si >= HIGH (3)
-          if (childSevVal >= 3) {
-            const val = childStats.debtValues[debtKey];
-            if (val !== null && val !== undefined) {
-              debtCollectors[metric].push(val);
-            }
+          if (childAcc && childAcc.totalLines > 0) {
+            parentAcc.weightedSum += childAcc.weightedSum;
+            parentAcc.totalLines += childAcc.totalLines;
           }
         });
       } else if (fileSeverityMap.has(childPath)) {
         const fSev = fileSeverityMap.get(childPath);
         const fCov = fileCoverageMap.get(childPath) || 0;
 
+        let weight = 0;
+        if (linesToCoverMap && linesToCoverMap.has(childPath)) {
+          weight = linesToCoverMap.get(childPath);
+        } else {
+          weight = 0;
+        }
+
+        if (fCov === -1) weight = 0;
         metricsKeys.forEach((metric) => {
           const val = SEVERITY_VALS[fSev[metric]] || 1;
+          // 1. Max Severity
           currentStats.maxSev[metric] = Math.max(
             currentStats.maxSev[metric],
             val
           );
-
-          if (val >= 3) {
-            if (fCov !== -1) {
-              debtCollectors[metric].push(fCov);
-            }
+          // 2. Acumular Deuda SI es Crítico/High (>=3)
+          if (val >= 3 && weight > 0) {
+            const debtKey = metricToDebtCol[metric];
+            const acc = currentStats.debtAccumulators[debtKey];
+            // Matematica: CoverageRealLines = Lines * (Percentage / 100)
+            acc.weightedSum += weight * (fCov / 100);
+            acc.totalLines += weight;
           }
         });
       }
     }
 
+    const finalDebtValues = {};
     metricsKeys.forEach((metric) => {
       const debtKey = metricToDebtCol[metric];
-      const values = debtCollectors[metric];
-      if (values.length > 0) {
-        const sum = values.reduce((acc, v) => acc + v, 0);
-        currentStats.debtValues[debtKey] = sum / values.length;
+      const acc = currentStats.debtAccumulators[debtKey];
+      if (acc.totalLines > 0) {
+        const rawVal = (acc.weightedSum / acc.totalLines) * 100;
+        finalDebtValues[debtKey] = Math.round(rawVal * 10) / 10;
       } else {
-        currentStats.debtValues[debtKey] = null;
+        finalDebtValues[debtKey] = null;
       }
     });
 
-    folderStatsMap.set(folderPath, currentStats);
+    folderStatsMap.set(folderPath, {
+      maxSev: currentStats.maxSev,
+      debtValues: finalDebtValues,
+      debtAccumulators: currentStats.debtAccumulators,
+    });
   }
 
   const updateStmt = db.prepare(`

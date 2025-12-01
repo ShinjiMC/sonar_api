@@ -9,39 +9,42 @@ function updateHierarchicalData(
 ) {
   const normalizedPath = filePath.replace(/\\/g, "/");
   let currentPath = path.dirname(normalizedPath);
-
-  // CORRECCIÓN: Usar 'let' porque cambia en el bucle
   let childName = path.basename(normalizedPath);
 
   if (currentPath === "" || currentPath === null) return;
 
+  // Función auxiliar para inicializar objeto de estadísticas
+  const getInitStats = () => ({
+    total_issues: 0,
+    total_complexity: 0,
+    total_churn: 0,
+    total_coupling_deps: 0,
+    total_loc: 0,
+    total_func_count: 0,
+    total_method_count: 0,
+    total_frequency: 0,
+    total_authors: 0,
+    total_halstead_volume: 0,
+    total_halstead_difficulty: 0,
+    total_halstead_effort: 0,
+    total_halstead_bugs: 0,
+  });
+
   // Bucle para subir por los directorios padres
   while (currentPath !== "." && currentPath !== "/") {
-    const stats = folderMetrics.get(currentPath) || {
-      total_issues: 0,
-      total_complexity: 0,
-      total_churn: 0,
-      total_coupling_deps: 0,
-      total_loc: 0,
-      total_func_count: 0, // Nuevo
-      total_method_count: 0, // Nuevo
-      total_frequency: 0,
-      total_authors: 0,
-      total_halstead_volume: 0,
-      total_halstead_difficulty: 0,
-      total_halstead_effort: 0,
-      total_halstead_bugs: 0,
-    };
+    const stats = folderMetrics.get(currentPath) || getInitStats();
 
-    // Acumular métricas
+    // Acumular métricas (Churn, Issues, Halstead, etc.)
     stats.total_issues += fileMetrics.total_issues || 0;
     stats.total_complexity += fileMetrics.total_complexity || 0;
     stats.total_churn += fileMetrics.total_churn || 0;
     stats.total_coupling_deps += fileMetrics.total_coupling_deps || 0;
 
-    stats.total_loc += fileMetrics.total_loc || 0;
-    stats.total_func_count += fileMetrics.total_func_count || 0;
-    stats.total_method_count += fileMetrics.total_method_count || 0;
+    // --- MODIFICACIÓN: NO SUMAR ESTRUCTURA (Se tomará directo del Package Layout) ---
+    // stats.total_loc += fileMetrics.total_loc || 0;
+    // stats.total_func_count += fileMetrics.total_func_count || 0;
+    // stats.total_method_count += fileMetrics.total_method_count || 0;
+    // -------------------------------------------------------------------------------
 
     stats.total_frequency += fileMetrics.total_frequency || 0;
     stats.total_authors += fileMetrics.total_authors || 0;
@@ -58,7 +61,6 @@ function updateHierarchicalData(
     children.add(childName);
     folderHierarchy.set(currentPath, children);
 
-    // Subir un nivel
     childName = path.basename(currentPath);
     currentPath = path.dirname(currentPath);
   }
@@ -66,30 +68,18 @@ function updateHierarchicalData(
   // Manejo del Root
   if (currentPath === ".") currentPath = "/";
 
-  const stats = folderMetrics.get(currentPath) || {
-    total_issues: 0,
-    total_complexity: 0,
-    total_churn: 0,
-    total_coupling_deps: 0,
-    total_loc: 0,
-    total_func_count: 0,
-    total_method_count: 0,
-    total_frequency: 0,
-    total_authors: 0,
-    total_halstead_volume: 0,
-    total_halstead_difficulty: 0,
-    total_halstead_effort: 0,
-    total_halstead_bugs: 0,
-  };
+  const stats = folderMetrics.get(currentPath) || getInitStats();
 
   stats.total_issues += fileMetrics.total_issues || 0;
   stats.total_complexity += fileMetrics.total_complexity || 0;
   stats.total_churn += fileMetrics.total_churn || 0;
   stats.total_coupling_deps += fileMetrics.total_coupling_deps || 0;
 
-  stats.total_loc += fileMetrics.total_loc || 0;
-  stats.total_func_count += fileMetrics.total_func_count || 0;
-  stats.total_method_count += fileMetrics.total_method_count || 0;
+  // --- MODIFICACIÓN ROOT: TAMPOCO SUMAMOS AQUÍ ---
+  // stats.total_loc += fileMetrics.total_loc || 0;
+  // stats.total_func_count += fileMetrics.total_func_count || 0;
+  // stats.total_method_count += fileMetrics.total_method_count || 0;
+  // -----------------------------------------------
 
   stats.total_frequency += fileMetrics.total_frequency || 0;
   stats.total_authors += fileMetrics.total_authors || 0;

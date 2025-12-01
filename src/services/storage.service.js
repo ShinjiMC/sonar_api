@@ -18,6 +18,7 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
 
   const shaId = shaResult.lastInsertRowid;
 
+  // ... (Logs de debug y preparación de mapas sin cambios) ...
   console.log("\n--- 🔍 DEBUG: Inspeccionando estructura de entrada ---");
   if (analysisData.layout && analysisData.layout.cohesion) {
     console.log(
@@ -31,6 +32,7 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
   const folderHierarchy = new Map();
   const sonarFolderMap = new Map();
   const fileNclocMap = new Map();
+  const fileLinesToCoverMap = new Map();
 
   const getFileEntry = (filePath) => {
     if (!filePath || filePath === "undefined" || filePath === "null")
@@ -49,7 +51,7 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
     return fileMap.get(filePath);
   };
 
-  // --- POBLAR MAPAS ---
+  // --- POBLAR MAPAS (Sin cambios) ---
   if (Array.isArray(analysisData.halstead)) {
     analysisData.halstead.forEach((h) => {
       const e = getFileEntry(h.file_path || h.file);
@@ -78,6 +80,7 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
             method_count: c.method_count || 0,
             attr_count: c.attr_count || 0,
           };
+          // Aseguramos guardar el tipo (PACKAGE, STRUCT, FILE)
           if (c.type) {
             if (!e.layout) e.layout = {};
             e.layout.type = c.type;
@@ -100,9 +103,9 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
     sonarFiles.forEach((s) => {
       const path = s.filePath || s.path;
       const entry = getFileEntry(path);
-      // Guardar NCLOC para criticidad
       if (s.ncloc) fileNclocMap.set(path, s.ncloc);
-
+      if (s.lines_to_cover !== undefined)
+        fileLinesToCoverMap.set(path, s.lines_to_cover);
       if (entry) {
         entry.sonar = {
           coverage:
@@ -129,7 +132,7 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
 
   console.log(`📊 Total entradas en memoria: ${fileMap.size}`);
 
-  // --- PREPARES ---
+  // --- PREPARED STATEMENTS (Sin cambios) ---
   const insertChurn = db.prepare(
     `INSERT INTO tbl_churn (sha_id, file_path, added, deleted, total, frequency, authors) VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
@@ -158,13 +161,18 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
   const tx = db.transaction(() => {
     for (const [filePath, metrics] of fileMap.entries()) {
       if (!filePath) continue;
+
       const type = metrics.layout ? metrics.layout.type : "FILE";
-      if (type === "PACKAGE") continue;
+      // MODIFICACIÓN: Eliminamos el 'continue' si es PACKAGE para que procese layout/cohesion
+      // if (type === "PACKAGE") continue;
 
       try {
         const isStruct = type === "STRUCT";
+        const isPackage = type === "PACKAGE";
+        const isFile = !isStruct && !isPackage;
 
-        if (!isStruct) {
+        // 1. Tablas específicas de ARCHIVOS (evitamos insertar ceros para paquetes)
+        if (isFile) {
           insertChurn.run(
             shaId,
             filePath,
@@ -188,8 +196,6 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
             metrics.coupling.num_dependency || 0,
             metrics.coupling.num_imports || 0
           );
-
-          // Coverage ya viene sanitizado (-1 o 0) desde sonar.metrics.js
           insertCoverage.run(
             shaId,
             filePath,
@@ -205,10 +211,12 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
           insertComplexity.run(shaId, filePath, metrics.complexity);
         }
 
+        // 2. Cohesion y Layout: SE INSERTAN PARA TODOS (Package, Struct, File)
         const realLoc =
           metrics.cohesion.loc > 0
             ? metrics.cohesion.loc
             : metrics.churn.total || 0;
+
         insertCohesion.run(
           shaId,
           filePath,
@@ -224,16 +232,54 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
             metrics.layout.type || "FILE",
             metrics.layout.root_w || 0,
             metrics.layout.root_d || 0,
-            metrics.layout.w || 0,
-            metrics.layout.d || 0,
-            metrics.layout.x || 0,
-            metrics.layout.y || 0
+            metrics.layout.child_w || 0,
+            metrics.layout.child_d || 0,
+            metrics.layout.child_x || 0,
+            metrics.layout.child_y || 0
           );
         }
 
-        if (!isStruct) {
-          // UPDATE HIERARCHY: Solo acumulamos métricas sumables (Issues, Complexity, LOC, etc.)
-          // NO acumulamos Coverage aquí.
+        // 3. Manejo de Folder Metrics
+
+        if (isPackage) {
+          // MODIFICACIÓN: Si es paquete, insertamos sus métricas estructurales DIRECTAS en folderMetrics.
+          // Normalizamos path para que coincida con lo que genera hierarchy.js
+          const normalizedPath = filePath.replace(/\\/g, "/");
+
+          // Obtenemos lo que ya exista (acumulado por hierarchy de hijos) o creamos nuevo
+          const stats = folderMetrics.get(normalizedPath) || {
+            total_issues: 0,
+            total_complexity: 0,
+            total_churn: 0,
+            total_coupling_deps: 0,
+            total_frequency: 0,
+            total_authors: 0,
+            total_halstead_volume: 0,
+            total_halstead_difficulty: 0,
+            total_halstead_effort: 0,
+            total_halstead_bugs: 0,
+            // Estos serán sobrescritos:
+            total_loc: 0,
+            total_func_count: 0,
+            total_method_count: 0,
+          };
+
+          // ASIGNACIÓN DIRECTA (No acumulada)
+          stats.total_loc = realLoc;
+          stats.total_func_count = metrics.cohesion.attr_count || 0;
+          stats.total_method_count = metrics.cohesion.method_count || 0;
+
+          // También asignamos complejidad si el paquete la trae directa
+          if (metrics.complexity > 0) {
+            stats.total_complexity = metrics.complexity;
+          }
+
+          folderMetrics.set(normalizedPath, stats);
+        }
+
+        if (isFile) {
+          // UPDATE HIERARCHY: Acumula métricas "suaves" (Churn, Issues, etc.)
+          // Ya no acumulará LOC/Methods/Funcs porque lo quitamos en hierarchy.js
           const hierarchyInput = {
             total_issues: metrics.sonar.issues,
             total_complexity: metrics.complexity,
@@ -248,7 +294,7 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
             total_halstead_bugs: metrics.halstead.bugs,
             total_func_count: metrics.cohesion.attr_count || 0,
             total_method_count: metrics.cohesion.method_count || 0,
-            accumulated_coverage: 0, // IGNORADO
+            accumulated_coverage: 0,
             file_count: 1,
           };
           updateHierarchicalData(
@@ -267,7 +313,7 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
   tx();
   console.log(`✅ Archivos procesados e insertados.`);
 
-  // --- INSERT FOLDERS ---
+  // --- INSERT FOLDERS (Sin cambios en la lógica de inserción) ---
   const insertFolder = db.prepare(
     `INSERT INTO tbl_folder_metrics (sha_id, folder_path, total_issues, total_complexity, total_churn, total_coupling_deps, total_loc, total_func_count, total_method_count, total_frequency, total_authors, total_halstead_volume, total_halstead_difficulty, total_halstead_effort, total_halstead_bugs, avg_coverage, sonar_url, issues_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
@@ -277,12 +323,10 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
 
   const folderTx = db.transaction(() => {
     for (const [folderPath, stats] of folderMetrics.entries()) {
-      // 1. Default Coverage: 0 (Si Sonar no lo trae)
       let finalAvgCoverage = 0;
       let sonarUrl = null;
       let issuesUrl = null;
 
-      // 2. Usar dato directo de Sonar (sin cálculo manual)
       const normalizedPath = folderPath.replace(/\\/g, "/");
       if (sonarFolderMap.has(normalizedPath)) {
         const sonarData = sonarFolderMap.get(normalizedPath);
@@ -327,9 +371,8 @@ async function processAndSaveMetrics(gitInfo, analysisData) {
   folderTx();
   console.log(`✅ Carpetas insertadas.`);
 
-  // Pasar NCLOC Map para criticidad
   calculateAndSaveFileCriticality(shaId, fileNclocMap);
-  calculateAndSaveFolderCriticality(shaId);
+  calculateAndSaveFolderCriticality(shaId, fileLinesToCoverMap);
   console.log("🏁 FIN.");
 }
 

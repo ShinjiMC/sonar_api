@@ -1,7 +1,13 @@
 const axios = require("axios");
 
 const SONAR_HOST = "https://sonarcloud.io";
-const METRICS = ["complexity", "violations", "coverage", "ncloc"].join(",");
+const METRICS = [
+  "complexity",
+  "violations",
+  "coverage",
+  "ncloc",
+  "lines_to_cover",
+].join(",");
 
 /**
  * Obtiene el último análisis.
